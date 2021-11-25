@@ -12,3 +12,4 @@ tokio = { version = "1.5.0", features = ["full"] }
 sqlx = { version = "0.5.9", features = ["runtime-tokio-native-tls", "mysql"] }
 cache_loader_async = "0.1.2"
 smartql_macro = { path = "./smartql_macro" }
+async-trait = "0.1.51"

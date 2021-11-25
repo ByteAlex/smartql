@@ -6,6 +6,8 @@ pub trait SmartQlMetaData {
     fn get_delta(&self) -> &HashMap<&'static str, DeltaOp>;
 
     fn reset_delta(&mut self);
+
+
 }
 
 pub fn coerce_delta_op(map: &mut HashMap<&'static str, DeltaOp>, r#struct: &'static str, field: &'static str, new_op: DeltaOp) {

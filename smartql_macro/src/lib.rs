@@ -52,6 +52,20 @@ fn is_smartql_primary(attr: &Attribute) -> bool {
     }
 }
 
+fn is_smartql_ignore(attr: &Attribute) -> bool {
+    if let Some(content) = into_smartql_group_content(attr) {
+        content.into_iter().any(|token| {
+            if let TokenTree::Ident(ident) = token {
+                ident.eq("ignore")
+            } else {
+                false
+            }
+        })
+    } else {
+        false
+    }
+}
+
 fn gen_accessors(field: &syn::Field, struct_name: &syn::Ident) -> proc_macro2::TokenStream {
     let ident = field.ident.clone().expect("Fields need identifiers!");
     let field_type = &field.ty;
@@ -104,19 +118,99 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
 
     let ident = &input.ident;
 
-    return quote! {
-        impl SmartQlObject for #ident {
+    let primary_fields = input.fields.iter()
+        .filter(|field| field.attrs.iter().any(|attr| is_smartql_primary(attr)))
+        .map(|field| field.clone())
+        .collect::<Vec<syn::Field>>();
 
-/*            async fn load<
-                'e, 'q, 'c, DB: Database, E: 'e + Executor<'c, Database=DB>,
-                PK: Send + Encode<'q, DB> + Type<DB>, PKC: IntoIterator<Item=PK>
-            >(executor: &E, keys: PKC) -> sqlx::Result<Self> {
-                sqlx::query_as("SELECT * FROM table WHERE `key` = ?")
-                    .bind(keys)
-                    .fetch_one(executor).await?
+    if primary_fields.len() == 0 {
+        panic!("Need at least one field marked with smartql(primary) for struct `{}`", ident);
+    }
+
+    let mut primary_bind_expr_load = "".to_owned();
+    let mut primary_bind_expr_save = "".to_owned();
+    let mut where_clause = "WHERE ".to_owned();
+    let mut first = true;
+    for field in primary_fields {
+        let identifier = field.ident.expect("Fields need identifiers").to_string();
+        if first {
+            where_clause.push_str("`");
+            where_clause.push_str(identifier.as_str());
+            where_clause.push_str("` = ?");
+            first = false;
+        } else {
+            where_clause.push_str(" AND `");
+            where_clause.push_str(identifier.as_str());
+            where_clause.push_str("` = ?");
+        }
+
+        primary_bind_expr_load.push_str(", iter.nth(0).expect(\"PrimaryKey not set\")");
+
+        primary_bind_expr_save.push_str(", self.get_");
+        primary_bind_expr_save.push_str(identifier.as_str());
+        primary_bind_expr_save.push_str("()");
+    }
+    let primary_bind_expr_load = proc_macro2::TokenStream::from_str(primary_bind_expr_load.as_str()).unwrap();
+    let primary_bind_expr_save = proc_macro2::TokenStream::from_str(primary_bind_expr_save.as_str()).unwrap();
+
+    let mut sql_fields_list = "".to_owned();
+    let mut first = true;
+    for field in input.fields.iter() {
+        if field.attrs.iter().any(|attr| is_smartql_ignore(attr)) {
+            continue;
+        }
+        let identifier = field.ident.clone().expect("Fields need identifiers").to_string();
+        if first {
+            sql_fields_list.push_str("`");
+            sql_fields_list.push_str(identifier.as_str());
+            sql_fields_list.push_str("`");
+            first = false;
+        } else {
+            sql_fields_list.push_str(", `");
+            sql_fields_list.push_str(identifier.as_str());
+            sql_fields_list.push_str("`");
+        }
+    }
+
+    let table = format!("{}", ident).to_lowercase();
+
+    let mut select_clause = "SELECT ".to_owned();
+    select_clause.push_str(sql_fields_list.as_str());
+    select_clause.push_str(" FROM `");
+    select_clause.push_str(table.as_str());
+    select_clause.push_str("` ");
+    select_clause.push_str(where_clause.as_str());
+
+
+    println!("Select clause: {}", select_clause);
+
+    let result = quote! {
+        use async_trait::async_trait;
+        use sqlx::{Encode, Database, Type};
+
+        #[async_trait]
+        impl SmartQlObject for #ident {
+            async fn load<'l, DB: Database, PK: Send + Sync + Encode<'l, DB> + Type<DB>,
+                PKC: IntoIterator<Item=PK>>(executor: &sqlx::Pool<DB>, keys: PKC) -> sqlx::Result<Self>
+                where Self: Sized {
+                let mut iter = keys.into_iter();
+                sqlx::query_as!(#ident, #select_clause #primary_bind_expr_load).fetch_one(executor).await
+            }
+
+/*          fn query<B: QueryBuilder<Self>>() -> B {
+
+            }
+
+            async fn save(&mut self) -> sqlx::Result<()> {
+
             }*/
         }
-    }.into();
+    };
+
+    println!("{}", result);
+
+    return quote! {}.into();
+    //return result.into();
 }
 
 #[proc_macro_attribute]
@@ -155,6 +249,7 @@ pub fn smartql_object(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let result = quote! {
         #[derive(smartql::SmartQlObject, sqlx::FromRow)]
         pub struct #struct_ident {
+            #[smartql(ignore)]
             __field_delta: std::collections::HashMap<&'static str, smartql::internal::DeltaOp>,
             #fields_token
         }
