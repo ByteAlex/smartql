@@ -271,9 +271,9 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
                 for (field, delta_op) in delta.clone().into_iter() {
                     self.add_field_to_args(&mut args, field);
                     match delta_op {
-                        Set => upsert.push_str(format!("`{}` = ?, ", field).as_str()),
-                        Increment => upsert.push_str(format!("`{}` = `{}` + ?, ", field, field).as_str()),
-                        Decrement => upsert.push_str(format!("`{}` = `{}` - ?, ", field, field).as_str()),
+                        smartql::internal::DeltaOp::Set => upsert.push_str(format!("`{}` = ?, ", field).as_str()),
+                        smartql::internal::DeltaOp::Increment => upsert.push_str(format!("`{}` = `{}` + ?, ", field, field).as_str()),
+                        smartql::internal::DeltaOp::Decrement => upsert.push_str(format!("`{}` = `{}` - ?, ", field, field).as_str()),
                     }
                 }
                 let upsert = upsert[..upsert.len() - 2].to_owned();
