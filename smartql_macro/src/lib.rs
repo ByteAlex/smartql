@@ -149,7 +149,7 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
     }
 
     let mut upsert_bindings = "".to_owned();
-    let mut upsert_bindings_appends ="".to_owned();
+    let mut upsert_bindings_appends = "".to_owned();
     let mut sql_fields_list = "".to_owned();
     let mut upsert_update_clause = "".to_owned();
     let mut first = true;
@@ -192,7 +192,7 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
         );
     }
 
-    let upsert_update_clause = upsert_update_clause[..upsert_update_clause.len()-2].to_owned();
+    let upsert_update_clause = upsert_update_clause[..upsert_update_clause.len() - 2].to_owned();
     let mut upsert_value_placeholders = "?".to_owned();
     for _ in 1..field_count {
         upsert_value_placeholders.push_str(", ?")
@@ -206,14 +206,27 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
 
     let table = format!("{}", ident).to_lowercase();
 
-    let select_clause = format!("SELECT {} FROM `{}` {}",
-                                    sql_fields_list.as_str(), table.as_str(), where_clause.as_str());
+    let select_clause = format!(
+        "SELECT {} FROM `{}` {}",
+        sql_fields_list.as_str(),
+        table.as_str(),
+        where_clause.as_str()
+    );
 
-    let upsert_all_clause = format!("INSERT INTO `{}` ({}) VALUES ({}) ON DUPLICATE KEY UPDATE {}",
-                                    table.as_str(), sql_fields_list, upsert_value_placeholders, upsert_update_clause);
+    let upsert_all_clause = format!(
+        "INSERT INTO `{}` ({}) VALUES ({}) ON DUPLICATE KEY UPDATE {}",
+        table.as_str(),
+        sql_fields_list,
+        upsert_value_placeholders,
+        upsert_update_clause
+    );
 
-    let upsert_prefix = format!("INSERT INTO `{}` ({}) VALUES ({}) ON DUPLICATE KEY UPDATE ",
-    table.as_str(), sql_fields_list, upsert_value_placeholders);
+    let upsert_prefix = format!(
+        "INSERT INTO `{}` ({}) VALUES ({}) ON DUPLICATE KEY UPDATE ",
+        table.as_str(),
+        sql_fields_list,
+        upsert_value_placeholders
+    );
 
     println!("Select clause: {}", select_clause);
     println!("Upsert all clause: {}", upsert_all_clause);
@@ -303,11 +316,13 @@ pub fn smartql_object(_attr: TokenStream, item: TokenStream) -> TokenStream {
             .to_string();
 
         if !field.attrs.iter().any(|attr| is_smartql_ignore(attr)) {
-            match_pattern.push_str(format!(
-                r#""{}" => args.add(self.get_{}()), "#,
-                field_ident,
-                field_ident
-            ).as_str());
+            match_pattern.push_str(
+                format!(
+                    r#""{}" => args.add(self.get_{}()), "#,
+                    field_ident, field_ident
+                )
+                .as_str(),
+            );
         }
 
         fields_list.push_str("\"");

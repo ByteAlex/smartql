@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use sqlx::mysql::MySqlArguments;
+use std::collections::HashMap;
 
 pub trait SmartQlMetaData {
     fn fields() -> Vec<&'static str>;
