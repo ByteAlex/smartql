@@ -76,22 +76,42 @@ fn gen_accessors(field: &syn::Field, struct_name: &syn::Ident) -> proc_macro2::T
     let getter = proc_macro2::TokenStream::from_str(getter.as_str()).unwrap();
     let setter = proc_macro2::TokenStream::from_str(setter.as_str()).unwrap();
 
+    let mut setter_appendix = quote! {};
+
     let additional_methods = if field.attrs.iter().any(|attr| is_smartql_incremental(attr)) {
         let inc = format!("increment_{}", ident);
         let dec = format!("decrement_{}", ident);
+        let delta_field = format!("self.__delta_{}", ident);
 
         let inc = proc_macro2::TokenStream::from_str(inc.as_str()).unwrap();
         let dec = proc_macro2::TokenStream::from_str(dec.as_str()).unwrap();
+        let delta_field = proc_macro2::TokenStream::from_str(delta_field.as_str()).unwrap();
+
+        setter_appendix = quote! {
+            #delta_field = None;
+        };
 
         quote! {
             pub fn #inc(&mut self, value: #field_type) {
                 self.#ident = self.#ident + value;
-                smartql::internal::coerce_delta_op(&mut self.__field_delta, stringify!(#struct_name), stringify!(#ident), smartql::internal::DeltaOp::Increment);
+                if smartql::internal::coerce_delta_op(&mut self.__field_delta,
+                    stringify!(#struct_name), stringify!(#ident),
+                    smartql::internal::DeltaOp::Incremental) == smartql::internal::DeltaOp::Set {
+                    #delta_field = None;
+                } else {
+                    #delta_field = Some(value);
+                }
             }
 
             pub fn #dec(&mut self, value: #field_type) {
                 self.#ident = self.#ident - value;
-                smartql::internal::coerce_delta_op(&mut self.__field_delta, stringify!(#struct_name), stringify!(#ident), smartql::internal::DeltaOp::Decrement);
+                if smartql::internal::coerce_delta_op(&mut self.__field_delta,
+                    stringify!(#struct_name), stringify!(#ident),
+                    smartql::internal::DeltaOp::Incremental) == smartql::internal::DeltaOp::Set {
+                    #delta_field = None;
+                } else {
+                    #delta_field = Some(value);
+                }
             }
         }
     } else {
@@ -106,6 +126,7 @@ fn gen_accessors(field: &syn::Field, struct_name: &syn::Ident) -> proc_macro2::T
         pub fn #setter(&mut self, value: #field_type) {
             smartql::internal::coerce_delta_op(&mut self.__field_delta, stringify!(#struct_name), stringify!(#ident), smartql::internal::DeltaOp::Set);
             self.#ident = value;
+            #setter_appendix
         }
 
         #additional_methods
@@ -184,8 +205,7 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
         }
         instance_creator_from_row.push_str(
             format!(
-                r#"{}: row.get("{}"), "#,
-                identifier.as_str(),
+                r#"row.get("{}"), "#,
                 identifier.as_str()
             )
             .as_str(),
@@ -243,11 +263,7 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
                     .fetch_optional(executor)
                     .await?;
                 if let Some(row) = row {
-                    return Ok(Some(smartql::smartql_init_lazy! {
-                        #ident {
-                            #instance_creator_from_row
-                        }
-                    }));
+                    return Ok(Some(Self::new(#instance_creator_from_row)));
                 } else {
                     return Ok(None);
                 }
@@ -269,11 +285,15 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
                     self.add_field_to_args(&mut args, field);
                 }
                 for (field, delta_op) in delta.clone().into_iter() {
-                    self.add_field_to_args(&mut args, field);
                     match delta_op {
-                        smartql::internal::DeltaOp::Set => upsert.push_str(format!("`{}` = ?, ", field).as_str()),
-                        smartql::internal::DeltaOp::Increment => upsert.push_str(format!("`{}` = `{}` + ?, ", field, field).as_str()),
-                        smartql::internal::DeltaOp::Decrement => upsert.push_str(format!("`{}` = `{}` - ?, ", field, field).as_str()),
+                        smartql::internal::DeltaOp::Set => {
+                            self.add_field_to_args(&mut args, field);
+                            upsert.push_str(format!("`{}` = ?, ", field).as_str());
+                        }
+                        smartql::internal::DeltaOp::Incremental => {
+                            self.add_delta_field_to_args(&mut args, field);
+                            upsert.push_str(format!("`{}` = `{}` + ?, ", field, field).as_str());
+                        }
                     }
                 }
                 let upsert = upsert[..upsert.len() - 2].to_owned();
@@ -301,7 +321,13 @@ pub fn smartql_object(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut accessors = "".to_owned();
 
     let mut match_pattern = "".to_owned();
+    let mut delta_match_pattern = "".to_owned();
 
+    let mut delta_fields_reset = "".to_owned();
+    let mut delta_fields = "".to_owned();
+    let mut delta_fields_initializer = "".to_owned();
+    let mut fields_initializer = "".to_owned();
+    let mut fields_with_type = "".to_owned();
     let mut fields_list = "".to_owned();
     let mut fields = "".to_owned();
     for field in struct_item.fields {
@@ -323,6 +349,33 @@ pub fn smartql_object(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 )
                 .as_str(),
             );
+            fields_with_type.push_str(format!(
+                "{}: {}, ",
+                field_ident, to_string(&field.ty)
+            ).as_str());
+            fields_initializer.push_str(format!("{}: {}, ", field_ident, field_ident).as_str());
+
+            if field.attrs.iter().any(|attr| is_smartql_incremental(attr)) {
+                delta_match_pattern.push_str(
+                    format!(
+                        r#""{}" => args.add(self.__delta_{}), "#,
+                        field_ident, field_ident
+                    )
+                        .as_str(),
+                );
+                delta_fields.push_str(format!(
+                    "#[smartql(ignore)] __delta_{}: Option<{}>, ",
+                    field_ident, to_string(&field.ty)
+                ).as_str());
+                delta_fields_initializer.push_str(format!(
+                    "__delta_{}: None,",
+                    field_ident
+                ).as_str());
+                delta_fields_reset.push_str(format!(
+                    "self.__delta_{} = None; ",
+                    field_ident
+                ).as_str());
+            }
         }
 
         fields_list.push_str("\"");
@@ -338,7 +391,13 @@ pub fn smartql_object(_attr: TokenStream, item: TokenStream) -> TokenStream {
         accessors.push_str("\n");
     }
 
+    let delta_fields_reset = proc_macro2::TokenStream::from_str(delta_fields_reset.as_str()).unwrap();
+    let delta_fields_initializer = proc_macro2::TokenStream::from_str(delta_fields_initializer.as_str()).unwrap();
+    let delta_fields = proc_macro2::TokenStream::from_str(delta_fields.as_str()).unwrap();
+    let fields_initializer = proc_macro2::TokenStream::from_str(fields_initializer.as_str()).unwrap();
+    let fields_with_type = proc_macro2::TokenStream::from_str(fields_with_type.as_str()).unwrap();
     let match_pattern = proc_macro2::TokenStream::from_str(match_pattern.as_str()).unwrap();
+    let delta_match_pattern = proc_macro2::TokenStream::from_str(delta_match_pattern.as_str()).unwrap();
     let fields_token = proc_macro2::TokenStream::from_str(fields.as_str()).unwrap();
     let fields_list_token = proc_macro2::TokenStream::from_str(fields_list.as_str()).unwrap();
     let accessors_token = proc_macro2::TokenStream::from_str(accessors.as_str()).unwrap();
@@ -349,9 +408,19 @@ pub fn smartql_object(_attr: TokenStream, item: TokenStream) -> TokenStream {
             #[smartql(ignore)]
             __field_delta: std::collections::HashMap<&'static str, smartql::internal::DeltaOp>,
             #fields_token
+            #delta_fields
         }
 
         impl #struct_ident {
+
+            pub fn new( #fields_with_type ) -> Self {
+                Self {
+                    __field_delta: std::collections::HashMap::new(),
+                    #fields_initializer
+                    #delta_fields_initializer
+                }
+            }
+
             #accessors_token
         }
 
@@ -366,6 +435,7 @@ pub fn smartql_object(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
             fn reset_delta(&mut self) {
                 self.__field_delta = std::collections::HashMap::new();
+                #delta_fields_reset
             }
 
             fn add_field_to_args(&self, args: &mut sqlx::mysql::MySqlArguments, field: &'static str) {
@@ -377,8 +447,20 @@ pub fn smartql_object(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     }
                 }
             }
+
+            fn add_delta_field_to_args(&self, args: &mut sqlx::mysql::MySqlArguments, field: &'static str) {
+                use sqlx::Arguments;
+                match field {
+                    #delta_match_pattern
+                    _ => {
+                        panic!("Unknown field!");
+                    }
+                }
+            }
         }
     };
+
+    println!("{}", result);
 
     return result.into();
 }
