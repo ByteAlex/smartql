@@ -1,43 +1,24 @@
 mod builder;
 pub mod internal;
 
-/// Re-Exports
-pub use smartql_macro::{smartql_object, smartql_init, smartql_init_lazy, SmartQlObject};
 pub use crate::builder::QueryBuilder;
+/// Re-Exports
+pub use smartql_macro::{args, smartql_init, smartql_init_lazy, smartql_object, SmartQlObject};
 
-use sqlx::{Encode, Database, Type};
 use async_trait::async_trait;
 
 #[async_trait]
 pub trait SmartQlObject {
+    async fn load(
+        executor: &sqlx::Pool<sqlx::MySql>,
+        args: sqlx::mysql::MySqlArguments,
+    ) -> sqlx::Result<Option<Self>>
+    where
+        Self: Sized;
 
-    async fn load<'l, DB: Database, PK: Send + Sync + Encode<'l, DB> + Type<DB>,
-        PKC: IntoIterator<Item=PK>>(executor: &sqlx::Pool<DB>, keys: PKC) -> sqlx::Result<Self>
-        where Self: Sized;
+    //fn query<B: QueryBuilder<<Self as SmartQlObject>::SelfType>>() -> B;
 
-/*    fn query<B: QueryBuilder<<Self as SmartQlObject>::SelfType>>() -> B;
+    async fn save_all(&mut self, executor: &sqlx::Pool<sqlx::MySql>) -> sqlx::Result<bool>;
 
-    async fn save(&mut self) -> sqlx::Result<()>;*/
+    async fn upsert(&mut self, executor: &sqlx::Pool<sqlx::MySql>) -> sqlx::Result<bool>;
 }
-
-/*pub struct X {}
-
-impl SmartQlObject for X {
-    async fn load<
-        'e, 'q, 'c, DB: Database, E: 'e + Executor<'c, Database=DB>,
-        PK: Send + Encode<'q, DB> + Type<DB>, PKC: IntoIterator<Item=PK>
-    >(executor: &E, keys: PKC) -> sqlx::Result<Self> {
-        let iter = keys.into_iter();
-        sqlx::query("SELECT * FROM table WHERE `key` = ?")
-            .bind(iter.nth(0).expect("PrimaryKey not set"))
-            .fetch_one(executor)
-    }
-
-    fn query<B: QueryBuilder<Self>>() -> B {
-        unimplemented!()
-    }
-
-    async fn save(&mut self) {
-        unimplemented!()
-    }
-}*/

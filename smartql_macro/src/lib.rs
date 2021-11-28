@@ -1,11 +1,11 @@
 extern crate proc_macro;
 
 use proc_macro::TokenStream;
-use quote::quote;
-use std::str::FromStr;
-use quote::ToTokens;
-use syn::Attribute;
 use proc_macro2::TokenTree;
+use quote::quote;
+use quote::ToTokens;
+use std::str::FromStr;
+use syn::Attribute;
 
 fn to_string<T: ToTokens>(token: &T) -> String {
     let mut tokens = proc_macro2::TokenStream::new();
@@ -118,17 +118,20 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
 
     let ident = &input.ident;
 
-    let primary_fields = input.fields.iter()
+    let primary_fields = input
+        .fields
+        .iter()
         .filter(|field| field.attrs.iter().any(|attr| is_smartql_primary(attr)))
         .map(|field| field.clone())
         .collect::<Vec<syn::Field>>();
 
     if primary_fields.len() == 0 {
-        panic!("Need at least one field marked with smartql(primary) for struct `{}`", ident);
+        panic!(
+            "Need at least one field marked with smartql(primary) for struct `{}`",
+            ident
+        );
     }
 
-    let mut primary_bind_expr_load = "".to_owned();
-    let mut primary_bind_expr_save = "".to_owned();
     let mut where_clause = "WHERE ".to_owned();
     let mut first = true;
     for field in primary_fields {
@@ -143,23 +146,32 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
             where_clause.push_str(identifier.as_str());
             where_clause.push_str("` = ?");
         }
-
-        primary_bind_expr_load.push_str(", iter.nth(0).expect(\"PrimaryKey not set\")");
-
-        primary_bind_expr_save.push_str(", self.get_");
-        primary_bind_expr_save.push_str(identifier.as_str());
-        primary_bind_expr_save.push_str("()");
     }
-    let primary_bind_expr_load = proc_macro2::TokenStream::from_str(primary_bind_expr_load.as_str()).unwrap();
-    let primary_bind_expr_save = proc_macro2::TokenStream::from_str(primary_bind_expr_save.as_str()).unwrap();
 
+    let mut upsert_bindings = "".to_owned();
+    let mut upsert_bindings_appends ="".to_owned();
     let mut sql_fields_list = "".to_owned();
+    let mut upsert_update_clause = "".to_owned();
     let mut first = true;
+    let mut instance_creator_from_row = "".to_owned();
+    let mut field_count = 0;
     for field in input.fields.iter() {
         if field.attrs.iter().any(|attr| is_smartql_ignore(attr)) {
             continue;
         }
-        let identifier = field.ident.clone().expect("Fields need identifiers").to_string();
+        field_count = field_count + 1;
+        let identifier = field
+            .ident
+            .clone()
+            .expect("Fields need identifiers")
+            .to_string();
+
+        if !field.attrs.iter().any(|attr| is_smartql_primary(attr)) {
+            upsert_update_clause.push_str(format!("`{}` = ?, ", identifier).as_str());
+            upsert_bindings_appends.push_str(format!("self.get_{}(), ", identifier).as_str());
+        }
+        upsert_bindings.push_str(format!("self.get_{}(), ", identifier).as_str());
+
         if first {
             sql_fields_list.push_str("`");
             sql_fields_list.push_str(identifier.as_str());
@@ -170,47 +182,102 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
             sql_fields_list.push_str(identifier.as_str());
             sql_fields_list.push_str("`");
         }
+        instance_creator_from_row.push_str(
+            format!(
+                r#"{}: row.get("{}"), "#,
+                identifier.as_str(),
+                identifier.as_str()
+            )
+            .as_str(),
+        );
     }
+
+    let upsert_update_clause = upsert_update_clause[..upsert_update_clause.len()-2].to_owned();
+    let mut upsert_value_placeholders = "?".to_owned();
+    for _ in 1..field_count {
+        upsert_value_placeholders.push_str(", ?")
+    }
+
+    upsert_bindings.push_str(upsert_bindings_appends.as_str());
+    let upsert_bindings = proc_macro2::TokenStream::from_str(upsert_bindings.as_str()).unwrap();
+
+    let instance_creator_from_row =
+        proc_macro2::TokenStream::from_str(instance_creator_from_row.as_str()).unwrap();
 
     let table = format!("{}", ident).to_lowercase();
 
-    let mut select_clause = "SELECT ".to_owned();
-    select_clause.push_str(sql_fields_list.as_str());
-    select_clause.push_str(" FROM `");
-    select_clause.push_str(table.as_str());
-    select_clause.push_str("` ");
-    select_clause.push_str(where_clause.as_str());
+    let select_clause = format!("SELECT {} FROM `{}` {}",
+                                    sql_fields_list.as_str(), table.as_str(), where_clause.as_str());
 
+    let upsert_all_clause = format!("INSERT INTO `{}` ({}) VALUES ({}) ON DUPLICATE KEY UPDATE {}",
+                                    table.as_str(), sql_fields_list, upsert_value_placeholders, upsert_update_clause);
+
+    let upsert_prefix = format!("INSERT INTO `{}` ({}) VALUES ({}) ON DUPLICATE KEY UPDATE ",
+    table.as_str(), sql_fields_list, upsert_value_placeholders);
 
     println!("Select clause: {}", select_clause);
+    println!("Upsert all clause: {}", upsert_all_clause);
 
     let result = quote! {
         use async_trait::async_trait;
-        use sqlx::{Encode, Database, Type};
+        use sqlx::{Database, Row};
 
         #[async_trait]
         impl SmartQlObject for #ident {
-            async fn load<'l, DB: Database, PK: Send + Sync + Encode<'l, DB> + Type<DB>,
-                PKC: IntoIterator<Item=PK>>(executor: &sqlx::Pool<DB>, keys: PKC) -> sqlx::Result<Self>
+            async fn load(executor: &sqlx::Pool<sqlx::MySql>, args: sqlx::mysql::MySqlArguments) -> sqlx::Result<Option<Self>>
                 where Self: Sized {
-                let mut iter = keys.into_iter();
-                sqlx::query_as!(#ident, #select_clause #primary_bind_expr_load).fetch_one(executor).await
+                let row = sqlx::query_with(#select_clause, args)
+                    .fetch_optional(executor)
+                    .await?;
+                if let Some(row) = row {
+                    return Ok(Some(smartql::smartql_init_lazy! {
+                        #ident {
+                            #instance_creator_from_row
+                        }
+                    }));
+                } else {
+                    return Ok(None);
+                }
             }
 
-/*          fn query<B: QueryBuilder<Self>>() -> B {
-
+            async fn save_all(&mut self, executor: &sqlx::Pool<sqlx::MySql>) -> sqlx::Result<bool> {
+                let result = sqlx::query_with(#upsert_all_clause, smartql::args!([#upsert_bindings]))
+                    .execute(executor)
+                    .await?;
+                self.reset_delta();
+                Ok(result.rows_affected() > 0)
             }
 
-            async fn save(&mut self) -> sqlx::Result<()> {
-
-            }*/
+            async fn upsert(&mut self, executor: &sqlx::Pool<sqlx::MySql>) -> sqlx::Result<bool> {
+                let mut upsert = #upsert_prefix .to_owned();
+                let delta = self.get_delta();
+                let mut args = sqlx::mysql::MySqlArguments::default();
+                for field in Self::fields().into_iter() {
+                    self.add_field_to_args(&mut args, field);
+                }
+                for (field, delta_op) in delta.clone().into_iter() {
+                    self.add_field_to_args(&mut args, field);
+                    match delta_op {
+                        Set => upsert.push_str(format!("`{}` = ?, ", field).as_str()),
+                        Increment => upsert.push_str(format!("`{}` = `{}` + ?, ", field, field).as_str()),
+                        Decrement => upsert.push_str(format!("`{}` = `{}` - ?, ", field, field).as_str()),
+                    }
+                }
+                let upsert = upsert[..upsert.len() - 2].to_owned();
+                println!("Preparing upsert:\n{}\nwith args:\n{:?}", upsert, args);
+                let result = sqlx::query_with(upsert.as_str(), args)
+                    .execute(executor)
+                    .await?;
+                self.reset_delta();
+                Ok(result.rows_affected() > 0)
+            }
         }
     };
 
     println!("{}", result);
 
-    return quote! {}.into();
-    //return result.into();
+    //return quote! {}.into();
+    return result.into();
 }
 
 #[proc_macro_attribute]
@@ -220,6 +287,8 @@ pub fn smartql_object(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let mut accessors = "".to_owned();
 
+    let mut match_pattern = "".to_owned();
+
     let mut fields_list = "".to_owned();
     let mut fields = "".to_owned();
     for field in struct_item.fields {
@@ -227,7 +296,19 @@ pub fn smartql_object(_attr: TokenStream, item: TokenStream) -> TokenStream {
             fields.push_str(to_string(&attr).as_str());
             fields.push_str("\n");
         }
-        let field_ident = field.ident.clone().expect("Fields need identifiers!").to_string();
+        let field_ident = field
+            .ident
+            .clone()
+            .expect("Fields need identifiers!")
+            .to_string();
+
+        if !field.attrs.iter().any(|attr| is_smartql_ignore(attr)) {
+            match_pattern.push_str(format!(
+                r#""{}" => args.add(self.get_{}()), "#,
+                field_ident,
+                field_ident
+            ).as_str());
+        }
 
         fields_list.push_str("\"");
         fields_list.push_str(field_ident.as_str());
@@ -242,12 +323,13 @@ pub fn smartql_object(_attr: TokenStream, item: TokenStream) -> TokenStream {
         accessors.push_str("\n");
     }
 
+    let match_pattern = proc_macro2::TokenStream::from_str(match_pattern.as_str()).unwrap();
     let fields_token = proc_macro2::TokenStream::from_str(fields.as_str()).unwrap();
     let fields_list_token = proc_macro2::TokenStream::from_str(fields_list.as_str()).unwrap();
     let accessors_token = proc_macro2::TokenStream::from_str(accessors.as_str()).unwrap();
 
     let result = quote! {
-        #[derive(smartql::SmartQlObject, sqlx::FromRow)]
+        #[derive(smartql::SmartQlObject)]
         pub struct #struct_ident {
             #[smartql(ignore)]
             __field_delta: std::collections::HashMap<&'static str, smartql::internal::DeltaOp>,
@@ -270,6 +352,40 @@ pub fn smartql_object(_attr: TokenStream, item: TokenStream) -> TokenStream {
             fn reset_delta(&mut self) {
                 self.__field_delta = std::collections::HashMap::new();
             }
+
+            fn add_field_to_args(&self, args: &mut sqlx::mysql::MySqlArguments, field: &'static str) {
+                use sqlx::Arguments;
+                match field {
+                    #match_pattern
+                    _ => {
+                        panic!("Unknown field!");
+                    }
+                }
+            }
+        }
+    };
+
+    return result.into();
+}
+
+#[proc_macro]
+pub fn args(item: TokenStream) -> TokenStream {
+    let args = syn::parse_macro_input!(item as syn::ExprArray);
+
+    let mut binds = "".to_owned();
+
+    for arg in args.elems {
+        binds.push_str(format!("args.add({}); ", arg.to_token_stream()).as_str())
+    }
+
+    let binds = proc_macro2::TokenStream::from_str(binds.as_str()).unwrap();
+
+    let result = quote! {
+        {
+            use sqlx::{Arguments};
+            let mut args = sqlx::mysql::MySqlArguments::default();
+            #binds
+            args
         }
     };
 
@@ -291,12 +407,17 @@ pub fn smartql_init(item: TokenStream) -> TokenStream {
     }
 
     let assignment = format!("__field_delta: [{}].iter().cloned().collect()", field_names);
-    let token = proc_macro2::TokenStream::from_str(assignment.as_str()).unwrap().into();
-    struct_item.fields.insert(0, syn::parse_macro_input!(token as syn::FieldValue));
+    let token = proc_macro2::TokenStream::from_str(assignment.as_str())
+        .unwrap()
+        .into();
+    struct_item
+        .fields
+        .insert(0, syn::parse_macro_input!(token as syn::FieldValue));
 
     return quote! {
         #struct_item
-    }.into();
+    }
+    .into();
 }
 
 #[proc_macro]
@@ -304,10 +425,15 @@ pub fn smartql_init_lazy(item: TokenStream) -> TokenStream {
     let mut struct_item = syn::parse_macro_input!(item as syn::ExprStruct);
 
     let assignment = "__field_delta: std::collections::HashMap::new()";
-    let token = proc_macro2::TokenStream::from_str(assignment).unwrap().into();
-    struct_item.fields.insert(0, syn::parse_macro_input!(token as syn::FieldValue));
+    let token = proc_macro2::TokenStream::from_str(assignment)
+        .unwrap()
+        .into();
+    struct_item
+        .fields
+        .insert(0, syn::parse_macro_input!(token as syn::FieldValue));
 
     return quote! {
         #struct_item
-    }.into();
+    }
+    .into();
 }

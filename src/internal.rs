@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use sqlx::mysql::MySqlArguments;
 
 pub trait SmartQlMetaData {
     fn fields() -> Vec<&'static str>;
@@ -7,10 +8,15 @@ pub trait SmartQlMetaData {
 
     fn reset_delta(&mut self);
 
-
+    fn add_field_to_args(&self, args: &mut MySqlArguments, field: &'static str);
 }
 
-pub fn coerce_delta_op(map: &mut HashMap<&'static str, DeltaOp>, r#struct: &'static str, field: &'static str, new_op: DeltaOp) {
+pub fn coerce_delta_op(
+    map: &mut HashMap<&'static str, DeltaOp>,
+    r#struct: &'static str,
+    field: &'static str,
+    new_op: DeltaOp,
+) {
     if let Some(prev) = map.insert(field, new_op) {
         if new_op != DeltaOp::Set {
             if prev != DeltaOp::Set {
