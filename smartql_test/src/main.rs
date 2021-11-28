@@ -35,4 +35,13 @@ pub async fn main() {
 
     println!("a: {}, b: {}, c: {}, counter: {}", table.get_a(), table.get_b(), table.get_c(), table.get_counter());
     println!("{:?}", table.get_delta());
+
+    smartql::smartql_init! {
+        Table {
+            a: 0,
+            b: 0,
+            c: "".to_owned(),
+            counter: 0,
+        }
+    };
 }

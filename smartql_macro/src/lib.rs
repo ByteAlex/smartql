@@ -208,7 +208,7 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
                 r#"row.get("{}"), "#,
                 identifier.as_str()
             )
-            .as_str(),
+                .as_str(),
         );
     }
 
@@ -347,7 +347,7 @@ pub fn smartql_object(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     r#""{}" => args.add(self.get_{}()), "#,
                     field_ident, field_ident
                 )
-                .as_str(),
+                    .as_str(),
             );
             fields_with_type.push_str(format!(
                 "{}: {}, ",
@@ -416,6 +416,14 @@ pub fn smartql_object(_attr: TokenStream, item: TokenStream) -> TokenStream {
             pub fn new( #fields_with_type ) -> Self {
                 Self {
                     __field_delta: std::collections::HashMap::new(),
+                    #fields_initializer
+                    #delta_fields_initializer
+                }
+            }
+
+            pub fn new_with_delta(delta: std::collections::HashMap<&'static str, smartql::internal::DeltaOp>, #fields_with_type ) -> Self {
+                Self {
+                    __field_delta: delta,
                     #fields_initializer
                     #delta_fields_initializer
                 }
@@ -491,46 +499,60 @@ pub fn args(item: TokenStream) -> TokenStream {
 
 #[proc_macro]
 pub fn smartql_init(item: TokenStream) -> TokenStream {
-    let mut struct_item = syn::parse_macro_input!(item as syn::ExprStruct);
+    let struct_item = syn::parse_macro_input!(item as syn::ExprStruct);
 
+    let struct_path = &struct_item.path;
+
+    let mut field_values = "".to_owned();
     let mut field_names = "".to_owned();
     for field in &struct_item.fields {
         if let syn::Member::Named(ident) = &field.member {
-            field_names.push_str("(\"");
-            field_names.push_str(to_string(ident).as_str());
-            field_names.push_str("\", smartql::internal::DeltaOp::Set)");
-            field_names.push_str(",")
+            let field_ident = to_string(ident);
+            field_names.push_str(format!(
+                r#"("{}", smartql::internal::DeltaOp::Set),"#,
+                field_ident
+            ).as_str());
+            field_values.push_str(format!(
+                r#"{},"#,
+                to_string(&field.expr)
+            ).as_str());
         }
     }
 
-    let assignment = format!("__field_delta: [{}].iter().cloned().collect()", field_names);
-    let token = proc_macro2::TokenStream::from_str(assignment.as_str())
-        .unwrap()
-        .into();
-    struct_item
-        .fields
-        .insert(0, syn::parse_macro_input!(token as syn::FieldValue));
+    let delta_assignment = format!("[{}].iter().cloned().collect()", field_names);
+    let delta_assignment = proc_macro2::TokenStream::from_str(delta_assignment.as_str())
+        .unwrap();
+
+    let field_assignment = proc_macro2::TokenStream::from_str(field_values.as_str())
+        .unwrap();
 
     return quote! {
-        #struct_item
+        #struct_path::new_with_delta(#delta_assignment, #field_assignment)
     }
-    .into();
+        .into();
 }
 
 #[proc_macro]
 pub fn smartql_init_lazy(item: TokenStream) -> TokenStream {
-    let mut struct_item = syn::parse_macro_input!(item as syn::ExprStruct);
+    let struct_item = syn::parse_macro_input!(item as syn::ExprStruct);
 
-    let assignment = "__field_delta: std::collections::HashMap::new()";
-    let token = proc_macro2::TokenStream::from_str(assignment)
-        .unwrap()
-        .into();
-    struct_item
-        .fields
-        .insert(0, syn::parse_macro_input!(token as syn::FieldValue));
+    let struct_path = &struct_item.path;
+
+    let mut field_values = "".to_owned();
+
+    for field in &struct_item.fields {
+        if let syn::Member::Named(_ident) = &field.member {
+            field_values.push_str(format!(
+                r#"{},"#,
+                to_string(&field.expr)
+            ).as_str());
+        }
+    }
+
+    let field_assignment = proc_macro2::TokenStream::from_str(field_values.as_str())
+        .unwrap();
 
     return quote! {
-        #struct_item
-    }
-    .into();
+        #struct_path::new(#field_assignment)
+    }.into();
 }
