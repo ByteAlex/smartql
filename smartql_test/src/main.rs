@@ -1,5 +1,4 @@
 use smartql::{smartql_object, SmartQlObject, internal::{SmartQlMetaData}};
-use async_trait::async_trait;
 
 #[tokio::main]
 pub async fn main() {
