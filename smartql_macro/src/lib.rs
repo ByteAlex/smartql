@@ -248,9 +248,6 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
         upsert_value_placeholders
     );
 
-    println!("Select clause: {}", select_clause);
-    println!("Upsert all clause: {}", upsert_all_clause);
-
     let result = quote! {
         use smartql::async_trait;
         use sqlx::{Database, Row};
@@ -297,7 +294,6 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
                     }
                 }
                 let upsert = upsert[..upsert.len() - 2].to_owned();
-                println!("Preparing upsert:\n{}\nwith args:\n{:?}", upsert, args);
                 let result = sqlx::query_with(upsert.as_str(), args)
                     .execute(executor)
                     .await?;
@@ -307,9 +303,6 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
         }
     };
 
-    println!("{}", result);
-
-    //return quote! {}.into();
     return result.into();
 }
 
@@ -467,8 +460,6 @@ pub fn smartql_object(_attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
     };
-
-    println!("{}", result);
 
     return result.into();
 }
