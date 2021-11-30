@@ -252,7 +252,7 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
     println!("Upsert all clause: {}", upsert_all_clause);
 
     let result = quote! {
-        use async_trait::async_trait;
+        use smartql::async_trait;
         use sqlx::{Database, Row};
 
         #[async_trait]

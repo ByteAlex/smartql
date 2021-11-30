@@ -10,6 +10,10 @@ log = "0.4.14"
 env_logger = "0.8.3"
 tokio = { version = "1.5.0", features = ["full"] }
 sqlx = { version = "0.5.9", features = ["runtime-tokio-native-tls", "mysql"] }
-cache_loader_async = "0.1.2"
 smartql_macro = { path = "./smartql_macro" }
 async-trait = "0.1.51"
+
+cache_loader_async = { version = "0.1.2", features = ["ttl-cache", "lru-cache"], optional = true }
+
+[features]
+cache = ["cache_loader_async", "smartql_macro/cache"]

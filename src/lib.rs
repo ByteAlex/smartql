@@ -4,6 +4,7 @@ pub mod internal;
 pub use crate::builder::QueryBuilder;
 /// Re-Exports
 pub use smartql_macro::{args, smartql_init, smartql_init_lazy, smartql_object, SmartQlObject};
+pub use async_trait::async_trait;
 
 use async_trait::async_trait;
 
