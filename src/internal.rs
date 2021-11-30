@@ -2,6 +2,8 @@ use sqlx::mysql::MySqlArguments;
 use std::collections::HashMap;
 
 pub trait SmartQlMetaData {
+    fn table_name() -> &'static str;
+
     fn fields() -> Vec<&'static str>;
 
     fn get_delta(&self) -> &HashMap<&'static str, DeltaOp>;

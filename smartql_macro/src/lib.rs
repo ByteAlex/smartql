@@ -5,7 +5,7 @@ use proc_macro2::TokenTree;
 use quote::quote;
 use quote::ToTokens;
 use std::str::FromStr;
-use syn::Attribute;
+use syn::{Attribute, NestedMeta, Meta, Lit};
 
 fn to_string<T: ToTokens>(token: &T) -> String {
     let mut tokens = proc_macro2::TokenStream::new();
@@ -224,26 +224,21 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
     let instance_creator_from_row =
         proc_macro2::TokenStream::from_str(instance_creator_from_row.as_str()).unwrap();
 
-    let table = format!("{}", ident).to_lowercase();
-
     let select_clause = format!(
-        "SELECT {} FROM `{}` {}",
+        "SELECT {} FROM `{{}}` {}",
         sql_fields_list.as_str(),
-        table.as_str(),
         where_clause.as_str()
     );
 
     let upsert_all_clause = format!(
-        "INSERT INTO `{}` ({}) VALUES ({}) ON DUPLICATE KEY UPDATE {}",
-        table.as_str(),
+        "INSERT INTO `{{}}` ({}) VALUES ({}) ON DUPLICATE KEY UPDATE {}",
         sql_fields_list,
         upsert_value_placeholders,
         upsert_update_clause
     );
 
     let upsert_prefix = format!(
-        "INSERT INTO `{}` ({}) VALUES ({}) ON DUPLICATE KEY UPDATE ",
-        table.as_str(),
+        "INSERT INTO `{{}}` ({}) VALUES ({}) ON DUPLICATE KEY UPDATE ",
         sql_fields_list,
         upsert_value_placeholders
     );
@@ -256,7 +251,7 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
         impl SmartQlObject for #ident {
             async fn load(executor: &sqlx::Pool<sqlx::MySql>, args: sqlx::mysql::MySqlArguments) -> sqlx::Result<Option<Self>>
                 where Self: Sized {
-                let row = sqlx::query_with(#select_clause, args)
+                let row = sqlx::query_with(format!(#select_clause, #ident::table_name()).as_str(), args)
                     .fetch_optional(executor)
                     .await?;
                 if let Some(row) = row {
@@ -267,7 +262,7 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
             }
 
             async fn save_all(&mut self, executor: &sqlx::Pool<sqlx::MySql>) -> sqlx::Result<bool> {
-                let result = sqlx::query_with(#upsert_all_clause, smartql::args!([#upsert_bindings]))
+                let result = sqlx::query_with(format!(#upsert_all_clause, #ident::table_name()).as_str(), smartql::args!([#upsert_bindings]))
                     .execute(executor)
                     .await?;
                 self.reset_delta();
@@ -275,7 +270,7 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
             }
 
             async fn upsert(&mut self, executor: &sqlx::Pool<sqlx::MySql>) -> sqlx::Result<bool> {
-                let mut upsert = #upsert_prefix .to_owned();
+                let mut upsert = format!(#upsert_prefix, #ident::table_name());
                 let delta = self.get_delta();
                 let mut args = sqlx::mysql::MySqlArguments::default();
                 for field in Self::fields().into_iter() {
@@ -307,9 +302,48 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn smartql_object(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn smartql_object(attr: TokenStream, item: TokenStream) -> TokenStream {
     let struct_item = syn::parse_macro_input!(item as syn::ItemStruct);
     let struct_ident = &struct_item.ident;
+
+    let mut table = format!("{}", struct_ident).to_lowercase();
+
+    let args = syn::parse_macro_input!(attr as syn::AttributeArgs);
+    for meta in args {
+        match meta {
+            NestedMeta::Meta(meta) => {
+                match meta {
+                    Meta::Path(_) => {}
+                    Meta::List(_) => {}
+                    Meta::NameValue(pair) => {
+                        let key = to_string(&pair.path);
+                        if key.eq("table") {
+                            if let Lit::Str(key) = pair.lit {
+                                table = key.value();
+                            } else {
+                                panic!("Invalid literal for `table` specified")
+                            }
+                        }
+                    }
+                }
+            }
+            NestedMeta::Lit(literal) => {
+                println!("{:?}", literal);
+                match literal {
+                    Lit::Str(_) => {}
+                    Lit::ByteStr(_) => {}
+                    Lit::Byte(_) => {}
+                    Lit::Char(_) => {}
+                    Lit::Int(_) => {}
+                    Lit::Float(_) => {}
+                    Lit::Bool(_) => {}
+                    Lit::Verbatim(_) => {}
+                }
+            }
+        }
+    }
+
+    println!("Table name: {}", table);
 
     let mut accessors = "".to_owned();
 
@@ -426,6 +460,10 @@ pub fn smartql_object(_attr: TokenStream, item: TokenStream) -> TokenStream {
         }
 
         impl smartql::internal::SmartQlMetaData for #struct_ident {
+            fn table_name() -> &'static str {
+                return #table;
+            }
+
             fn fields() -> Vec<&'static str> {
                 return vec![#fields_list_token]
             }

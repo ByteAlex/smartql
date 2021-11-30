@@ -5,7 +5,7 @@ pub async fn main() {
     let executor = sqlx::MySqlPool::connect(env!("DATABASE_URL"))
         .await.expect("Failed to connect to mysql");
 
-    #[smartql_object]
+    #[smartql_object(table = "table")]
     struct Table {
         #[smartql(primary, incremental)]
         pub a: i32,
