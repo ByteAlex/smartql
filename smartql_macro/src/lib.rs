@@ -66,6 +66,29 @@ fn is_smartql_ignore(attr: &Attribute) -> bool {
     }
 }
 
+fn get_smartql_alias(attr: &Attribute) -> Option<String> {
+    if let Some(content) = into_smartql_group_content(attr) {
+        let mut iter = content.into_iter();
+        while let Some(token) = iter.next() {
+            if let TokenTree::Ident(ident) = token {
+                if ident.eq("alias") {
+                    if let TokenTree::Punct(punct) = iter.next().expect("Alias expects a punctuation after it") {
+                        if punct.as_char() == '=' {
+                            if let TokenTree::Literal(lit) = iter.next().expect("Alias requires a literal after the equals sign") {
+                                let lit: syn::LitStr = syn::parse2(lit.into_token_stream()).expect("Literal needs to be of type string");
+                                return Some(lit.value());
+                            }
+                        } else {
+                            panic!("Alias expects an equals punctuation!");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 fn gen_accessors(field: &syn::Field, struct_name: &syn::Ident) -> proc_macro2::TokenStream {
     let ident = field.ident.clone().expect("Fields need identifiers!");
     let field_type = &field.ty;
@@ -157,14 +180,19 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
     let mut first = true;
     for field in primary_fields {
         let identifier = field.ident.expect("Fields need identifiers").to_string();
+        let field_alias = field.attrs.iter()
+            .flat_map(|attr| get_smartql_alias(attr))
+            .next()
+            .unwrap_or(identifier);
+
         if first {
             where_clause.push_str("`");
-            where_clause.push_str(identifier.as_str());
+            where_clause.push_str(field_alias.as_str());
             where_clause.push_str("` = ?");
             first = false;
         } else {
             where_clause.push_str(" AND `");
-            where_clause.push_str(identifier.as_str());
+            where_clause.push_str(field_alias.as_str());
             where_clause.push_str("` = ?");
         }
     }
@@ -181,32 +209,32 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
             continue;
         }
         field_count = field_count + 1;
-        let identifier = field
-            .ident
-            .clone()
-            .expect("Fields need identifiers")
-            .to_string();
+        let identifier = field.ident.clone().expect("Fields need identifiers").to_string();
+        let field_alias = field.attrs.iter()
+            .flat_map(|attr| get_smartql_alias(attr))
+            .next()
+            .unwrap_or(identifier.clone());
 
         if !field.attrs.iter().any(|attr| is_smartql_primary(attr)) {
-            upsert_update_clause.push_str(format!("`{}` = ?, ", identifier).as_str());
+            upsert_update_clause.push_str(format!("`{}` = ?, ", field_alias).as_str());
             upsert_bindings_appends.push_str(format!("self.get_{}(), ", identifier).as_str());
         }
         upsert_bindings.push_str(format!("self.get_{}(), ", identifier).as_str());
 
         if first {
             sql_fields_list.push_str("`");
-            sql_fields_list.push_str(identifier.as_str());
+            sql_fields_list.push_str(field_alias.as_str());
             sql_fields_list.push_str("`");
             first = false;
         } else {
             sql_fields_list.push_str(", `");
-            sql_fields_list.push_str(identifier.as_str());
+            sql_fields_list.push_str(field_alias.as_str());
             sql_fields_list.push_str("`");
         }
         instance_creator_from_row.push_str(
             format!(
                 r#"row.get("{}"), "#,
-                identifier.as_str()
+                field_alias.as_str()
             )
                 .as_str(),
         );
@@ -280,11 +308,11 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
                     match delta_op {
                         smartql::internal::DeltaOp::Set => {
                             self.add_field_to_args(&mut args, field);
-                            upsert.push_str(format!("`{}` = ?, ", field).as_str());
+                            upsert.push_str(format!("`{}` = ?, ", #ident::field_alias(field)).as_str());
                         }
                         smartql::internal::DeltaOp::Incremental => {
                             self.add_delta_field_to_args(&mut args, field);
-                            upsert.push_str(format!("`{}` = `{}` + ?, ", field, field).as_str());
+                            upsert.push_str(format!("`{}` = `{}` + ?, ", #ident::field_alias(field), #ident::field_alias(field)).as_str());
                         }
                     }
                 }
@@ -328,7 +356,6 @@ pub fn smartql_object(attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             }
             NestedMeta::Lit(literal) => {
-                println!("{:?}", literal);
                 match literal {
                     Lit::Str(_) => {}
                     Lit::ByteStr(_) => {}
@@ -343,9 +370,9 @@ pub fn smartql_object(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
-    println!("Table name: {}", table);
-
     let mut accessors = "".to_owned();
+
+    let mut alias_match_pattern = "".to_owned();
 
     let mut match_pattern = "".to_owned();
     let mut delta_match_pattern = "".to_owned();
@@ -362,6 +389,7 @@ pub fn smartql_object(attr: TokenStream, item: TokenStream) -> TokenStream {
             fields.push_str(to_string(&attr).as_str());
             fields.push_str("\n");
         }
+
         let field_ident = field
             .ident
             .clone()
@@ -369,6 +397,15 @@ pub fn smartql_object(attr: TokenStream, item: TokenStream) -> TokenStream {
             .to_string();
 
         if !field.attrs.iter().any(|attr| is_smartql_ignore(attr)) {
+
+            if let Some(alias) = field.attrs.iter().flat_map(|attr| get_smartql_alias(attr))
+                .next() {
+                alias_match_pattern.push_str(format!(
+                    r#""{}" => "{}", "#,
+                    field_ident, alias,
+                ).as_str());
+            }
+
             match_pattern.push_str(
                 format!(
                     r#""{}" => args.add(self.get_{}()), "#,
@@ -418,6 +455,7 @@ pub fn smartql_object(attr: TokenStream, item: TokenStream) -> TokenStream {
         accessors.push_str("\n");
     }
 
+    let alias_match_pattern = proc_macro2::TokenStream::from_str(alias_match_pattern.as_str()).unwrap();
     let delta_fields_reset = proc_macro2::TokenStream::from_str(delta_fields_reset.as_str()).unwrap();
     let delta_fields_initializer = proc_macro2::TokenStream::from_str(delta_fields_initializer.as_str()).unwrap();
     let delta_fields = proc_macro2::TokenStream::from_str(delta_fields.as_str()).unwrap();
@@ -466,6 +504,13 @@ pub fn smartql_object(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             fn fields() -> Vec<&'static str> {
                 return vec![#fields_list_token]
+            }
+
+            fn field_alias(field: &'static str) -> &'static str {
+                match field {
+                    #alias_match_pattern
+                    _ => field,
+                }
             }
 
             fn get_delta(&self) -> &std::collections::HashMap<&'static str, smartql::internal::DeltaOp> {

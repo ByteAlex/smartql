@@ -6,25 +6,25 @@ pub async fn main() {
         .await.expect("Failed to connect to mysql");
 
     #[smartql_object(table = "table")]
-    struct Table {
+    struct QueryTest {
         #[smartql(primary, incremental)]
         pub a: i32,
-        #[smartql(primary, incremental)]
-        pub b: i32,
+        #[smartql(primary, incremental, alias = "b")]
+        pub secondary: i32,
         pub c: String,
-        #[smartql(incremental)]
-        pub counter: i32,
+        #[smartql(incremental, alias = "counter")]
+        pub incremental_test: i32,
     }
 
-    let mut table = Table::load(&executor, smartql::args!([0, 1]))
+    let mut table = QueryTest::load(&executor, smartql::args!([0, 1]))
         .await
         .expect("Error in query")
         .expect("No result");
 
-    println!("a: {}, b: {}, c: {}: counter: {}", table.get_a(), table.get_b(), table.get_c(), table.get_counter());
+    println!("a: {}, b: {}, c: {}: counter: {}", table.get_a(), table.get_secondary(), table.get_c(), table.get_incremental_test());
 
     table.set_c("Fancy".to_owned());
-    table.increment_counter(1);
+    table.increment_incremental_test(1);
 
     println!("{:?}", table.get_delta());
 
@@ -32,15 +32,6 @@ pub async fn main() {
         panic!("Save failed")
     }
 
-    println!("a: {}, b: {}, c: {}, counter: {}", table.get_a(), table.get_b(), table.get_c(), table.get_counter());
+    println!("a: {}, b: {}, c: {}: counter: {}", table.get_a(), table.get_secondary(), table.get_c(), table.get_incremental_test());
     println!("{:?}", table.get_delta());
-
-    smartql::smartql_init! {
-        Table {
-            a: 0,
-            b: 0,
-            c: "".to_owned(),
-            counter: 0,
-        }
-    };
 }

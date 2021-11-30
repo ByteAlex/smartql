@@ -6,6 +6,8 @@ pub trait SmartQlMetaData {
 
     fn fields() -> Vec<&'static str>;
 
+    fn field_alias(field: &'static str) -> &'static str;
+
     fn get_delta(&self) -> &HashMap<&'static str, DeltaOp>;
 
     fn reset_delta(&mut self);
