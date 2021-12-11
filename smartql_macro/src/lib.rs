@@ -89,6 +89,34 @@ fn get_smartql_alias(attr: &Attribute) -> Option<String> {
     None
 }
 
+fn get_smartql_repr(attr: &Attribute) -> Option<String> {
+    if let Some(content) = into_smartql_group_content(attr) {
+        let mut iter = content.into_iter();
+        while let Some(token) = iter.next() {
+            if let TokenTree::Ident(ident) = token {
+                if ident.eq("repr") {
+                    if let TokenTree::Punct(punct) = iter.next().expect("Alias expects a punctuation after it") {
+                        if punct.as_char() == '=' {
+                            let literal = iter.next().expect("Alias requires a literal after the equals sign");
+                            if let TokenTree::Literal(lit) = literal {
+                                let lit: syn::LitStr = syn::parse2(lit.into_token_stream()).expect("Literal needs to be of type string");
+                                return Some(lit.value());
+                            } else if let TokenTree::Ident(ident) = literal {
+                                return Some(ident.to_string());
+                            } else {
+                                panic!("Matched unknown token in repr: {:?}", literal);
+                            }
+                        } else {
+                            panic!("Alias expects an equals punctuation!");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 fn gen_accessors(field: &syn::Field, struct_name: &syn::Ident) -> proc_macro2::TokenStream {
     let ident = field.ident.clone().expect("Fields need identifiers!");
     let field_type = &field.ty;
@@ -100,6 +128,52 @@ fn gen_accessors(field: &syn::Field, struct_name: &syn::Ident) -> proc_macro2::T
     let setter = proc_macro2::TokenStream::from_str(setter.as_str()).unwrap();
 
     let mut setter_appendix = quote! {};
+
+    let repr_fn = format!("__repr_{}", ident);
+    let repr_fn = proc_macro2::TokenStream::from_str(repr_fn.as_str()).unwrap();
+    let repr_method = if let Some(repr) = field.attrs.iter().flat_map(|attr| get_smartql_repr(attr)).next() {
+        if field.attrs.iter().any(|attr| is_smartql_incremental(attr)) {
+            panic!("Failure: A repr() field cannot be incremental")
+        }
+
+        let token = field_type.to_token_stream().into_iter()
+            .next()
+            .expect("Token required");
+
+        let repr_token = proc_macro2::TokenStream::from_str(repr.as_str()).unwrap();
+
+        if let TokenTree::Ident(field_type_ident) = token {
+            if field_type_ident.to_string().eq("Option") {
+                quote! {
+                    pub fn #repr_fn(&self) -> Option < #repr_token > {
+                        if let Some(data) = &self.#ident {
+                            Option::Some(data.clone() as #repr_token)
+                        } else {
+                            Option::None
+                        }
+                    }
+                }
+            } else {
+                quote! {
+                    pub fn #repr_fn(&self) -> #repr_token {
+                        data.clone() as #repr_token
+                    }
+                }
+            }
+        } else {
+            quote! {
+            pub fn #repr_fn(&self) -> #repr_token {
+                data.clone() as #repr_token
+            }
+        }
+        }
+    } else {
+        quote! {
+            pub fn #repr_fn(&self) -> &#field_type {
+                &self.#ident
+            }
+        }
+    };
 
     let additional_methods = if field.attrs.iter().any(|attr| is_smartql_incremental(attr)) {
         let inc = format!("increment_{}", ident);
@@ -153,6 +227,8 @@ fn gen_accessors(field: &syn::Field, struct_name: &syn::Ident) -> proc_macro2::T
         }
 
         #additional_methods
+
+        #repr_method
     }
 }
 
@@ -217,9 +293,9 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
 
         if !field.attrs.iter().any(|attr| is_smartql_primary(attr)) {
             upsert_update_clause.push_str(format!("`{}` = ?, ", field_alias).as_str());
-            upsert_bindings_appends.push_str(format!("self.get_{}(), ", identifier).as_str());
+            upsert_bindings_appends.push_str(format!("self.__repr_{}(), ", identifier).as_str());
         }
-        upsert_bindings.push_str(format!("self.get_{}(), ", identifier).as_str());
+        upsert_bindings.push_str(format!("self.__repr_{}(), ", identifier).as_str());
 
         if first {
             sql_fields_list.push_str("`");
@@ -231,13 +307,24 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
             sql_fields_list.push_str(field_alias.as_str());
             sql_fields_list.push_str("`");
         }
-        instance_creator_from_row.push_str(
-            format!(
-                r#"row.get("{}"), "#,
-                field_alias.as_str()
-            )
-                .as_str(),
-        );
+
+        if let Some(repr) = field.attrs.iter().flat_map(|attr| get_smartql_repr(attr)).next() {
+            instance_creator_from_row.push_str(
+                format!(
+                    r#"unsafe {{ std::mem::transmute::<_, _>(row.get::<{}, _>("{}")) }}, "#,
+                    repr, field_alias.as_str()
+                )
+                    .as_str(),
+            );
+        } else {
+            instance_creator_from_row.push_str(
+                format!(
+                    r#"row.get("{}"), "#,
+                    field_alias.as_str()
+                )
+                    .as_str(),
+            );
+        }
     }
 
     let upsert_update_clause = upsert_update_clause[..upsert_update_clause.len() - 2].to_owned();
@@ -397,7 +484,6 @@ pub fn smartql_object(attr: TokenStream, item: TokenStream) -> TokenStream {
             .to_string();
 
         if !field.attrs.iter().any(|attr| is_smartql_ignore(attr)) {
-
             if let Some(alias) = field.attrs.iter().flat_map(|attr| get_smartql_alias(attr))
                 .next() {
                 alias_match_pattern.push_str(format!(
@@ -408,7 +494,7 @@ pub fn smartql_object(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             match_pattern.push_str(
                 format!(
-                    r#""{}" => args.add(self.get_{}()), "#,
+                    r#""{}" => args.add(self.__repr_{}()), "#,
                     field_ident, field_ident
                 )
                     .as_str(),
