@@ -364,6 +364,7 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
 
             async fn load(executor: &sqlx::Pool<sqlx::MySql>, args: sqlx::mysql::MySqlArguments) -> sqlx::Result<Option<Self>>
                 where Self: Sized {
+                use smartql::internal::SmartQlMetaData;
                 let row = sqlx::query_with(format!(#select_clause, #ident::table_name()).as_str(), args)
                     .fetch_optional(executor)
                     .await?;
@@ -376,6 +377,7 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
             }
 
             async fn save_all(&mut self, executor: &sqlx::Pool<sqlx::MySql>) -> sqlx::Result<bool> {
+                use smartql::internal::SmartQlMetaData;
                 let result = sqlx::query_with(format!(#upsert_all_clause, #ident::table_name()).as_str(), smartql::args!([#upsert_bindings]))
                     .execute(executor)
                     .await?;
@@ -384,6 +386,7 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
             }
 
             async fn upsert(&mut self, executor: &sqlx::Pool<sqlx::MySql>) -> sqlx::Result<bool> {
+                use smartql::internal::SmartQlMetaData;
                 let mut upsert = format!(#upsert_prefix, #ident::table_name());
                 let delta = self.get_delta();
                 let mut args = sqlx::mysql::MySqlArguments::default();
