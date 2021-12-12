@@ -359,17 +359,16 @@ pub fn derive_smartql_object(item: TokenStream) -> TokenStream {
     );
 
     let result = quote! {
-        use smartql::async_trait;
-        use sqlx::{Database, Row};
-
-        #[async_trait]
+        #[smartql::async_trait]
         impl SmartQlObject for #ident {
+
             async fn load(executor: &sqlx::Pool<sqlx::MySql>, args: sqlx::mysql::MySqlArguments) -> sqlx::Result<Option<Self>>
                 where Self: Sized {
                 let row = sqlx::query_with(format!(#select_clause, #ident::table_name()).as_str(), args)
                     .fetch_optional(executor)
                     .await?;
                 if let Some(row) = row {
+                    use sqlx::Row;
                     return Ok(Some(Self::new(#instance_creator_from_row)));
                 } else {
                     return Ok(None);
