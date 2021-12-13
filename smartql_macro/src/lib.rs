@@ -425,12 +425,35 @@ pub fn smartql_object(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let mut table = format!("{}", struct_ident).to_lowercase();
 
+    let mut default_impl = quote! {};
+
     let args = syn::parse_macro_input!(attr as syn::AttributeArgs);
     for meta in args {
         match meta {
             NestedMeta::Meta(meta) => {
+                println!("meta: {:?}", meta);
                 match meta {
-                    Meta::Path(_) => {}
+                    Meta::Path(path) => {
+                        if let Some(ident) = path.get_ident() {
+                            if ident.to_string().eq("default") {
+                                let fields = struct_item.fields.iter()
+                                    .filter(|field| field.attrs.iter().all(|attr| !is_smartql_ignore(attr)))
+                                    .map(|field| field.ident.clone().expect("Fields need identifiers"))
+                                    .collect::<Vec<proc_macro2::Ident>>();
+                                default_impl = quote! {
+                                    impl Default for #struct_ident {
+                                        fn default() -> Self {
+                                            smartql::smartql_init_lazy! {
+                                                #struct_ident {
+                                                    #(#fields : Default::default(),)*
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     Meta::List(_) => {}
                     Meta::NameValue(pair) => {
                         let key = to_string(&pair.path);
@@ -445,6 +468,7 @@ pub fn smartql_object(attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             }
             NestedMeta::Lit(literal) => {
+                println!("lit: {:?}", literal);
                 match literal {
                     Lit::Str(_) => {}
                     Lit::ByteStr(_) => {}
@@ -630,6 +654,8 @@ pub fn smartql_object(attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             }
         }
+
+        #default_impl
     };
 
     return result.into();

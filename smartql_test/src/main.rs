@@ -12,7 +12,7 @@ pub async fn main() {
         Other = 1,
     }
 
-    #[smartql_object(table = "table")]
+    #[smartql_object(default, table = "table")]
     struct QueryTest {
         #[smartql(primary, incremental)]
         pub a: i32,
