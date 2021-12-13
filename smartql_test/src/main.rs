@@ -12,7 +12,7 @@ pub async fn main() {
         Other = 1,
     }
 
-    #[smartql_object(default, table = "table")]
+    #[smartql_object(default, derive = "Debug, Clone", table = "table")]
     struct QueryTest {
         #[smartql(primary, incremental)]
         pub a: i32,
@@ -30,7 +30,7 @@ pub async fn main() {
         .expect("Error in query")
         .expect("No result");
 
-    println!("a: {}, b: {}, c: {}: counter: {}, repr: {:?}", table.get_a(), table.get_secondary(), table.get_c(), table.get_incremental_test(), table.get_repr());
+    println!("{:?}", table);
 
     table.set_c("Fancy".to_owned());
     table.increment_incremental_test(1);
@@ -42,6 +42,6 @@ pub async fn main() {
         panic!("Save failed")
     }
 
-    println!("a: {}, b: {}, c: {}: counter: {}, repr: {:?}", table.get_a(), table.get_secondary(), table.get_c(), table.get_incremental_test(), table.get_repr());
+    println!("{:?}", table);
     println!("{:?}", table.get_delta());
 }

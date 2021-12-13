@@ -427,11 +427,12 @@ pub fn smartql_object(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let mut default_impl = quote! {};
 
+    let mut additional_derive = "smartql::SmartQlObject".to_owned();
+
     let args = syn::parse_macro_input!(attr as syn::AttributeArgs);
     for meta in args {
         match meta {
             NestedMeta::Meta(meta) => {
-                println!("meta: {:?}", meta);
                 match meta {
                     Meta::Path(path) => {
                         if let Some(ident) = path.get_ident() {
@@ -463,12 +464,17 @@ pub fn smartql_object(attr: TokenStream, item: TokenStream) -> TokenStream {
                             } else {
                                 panic!("Invalid literal for `table` specified")
                             }
+                        } else if key.eq("derive") {
+                            if let Lit::Str(key) = pair.lit {
+                                additional_derive.push_str(format!(", {}", key.value()).as_str())
+                            } else {
+                                panic!("Invalid literal for `derive` specified")
+                            }
                         }
                     }
                 }
             }
             NestedMeta::Lit(literal) => {
-                println!("lit: {:?}", literal);
                 match literal {
                     Lit::Str(_) => {}
                     Lit::ByteStr(_) => {}
@@ -567,6 +573,8 @@ pub fn smartql_object(attr: TokenStream, item: TokenStream) -> TokenStream {
         accessors.push_str("\n");
     }
 
+    let additional_derive = proc_macro2::TokenStream::from_str(additional_derive.as_str()).unwrap();
+
     let alias_match_pattern = proc_macro2::TokenStream::from_str(alias_match_pattern.as_str()).unwrap();
     let delta_fields_reset = proc_macro2::TokenStream::from_str(delta_fields_reset.as_str()).unwrap();
     let delta_fields_initializer = proc_macro2::TokenStream::from_str(delta_fields_initializer.as_str()).unwrap();
@@ -580,7 +588,7 @@ pub fn smartql_object(attr: TokenStream, item: TokenStream) -> TokenStream {
     let accessors_token = proc_macro2::TokenStream::from_str(accessors.as_str()).unwrap();
 
     let result = quote! {
-        #[derive(smartql::SmartQlObject)]
+        #[derive(#additional_derive)]
         pub struct #struct_ident {
             #[smartql(ignore)]
             __field_delta: std::collections::HashMap<&'static str, smartql::internal::DeltaOp>,
